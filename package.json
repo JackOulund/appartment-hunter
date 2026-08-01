@@ -15,7 +15,8 @@
     "linq:webhook:register": "tsx --env-file-if-exists=.env scripts/register-linq-webhook.ts",
     "job:renewal": "tsx --env-file-if-exists=.env scripts/run-renewal-check.ts",
     "linq:webhook:list": "tsx --env-file-if-exists=.env scripts/manage-linq-webhooks.ts list",
-    "linq:webhook:delete": "tsx --env-file-if-exists=.env scripts/manage-linq-webhooks.ts delete"
+    "linq:webhook:delete": "tsx --env-file-if-exists=.env scripts/manage-linq-webhooks.ts delete",
+    "linq:test-card": "tsx --env-file-if-exists=.env scripts/send-test-card.ts"
   },
   "keywords": [],
   "author": "",

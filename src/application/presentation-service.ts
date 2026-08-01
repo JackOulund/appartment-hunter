@@ -1,9 +1,10 @@
 import type { Repositories } from "../database/repositories/index.js";
-import type { LinqAdapter } from "../integrations/linq/linq-client.js";
+import type { LinqAdapter, SendResult } from "../integrations/linq/linq-client.js";
 import type { Language, RankedListing } from "../domain/entities.js";
 import {
   buildBatchControlMessage,
   buildBatchIntro,
+  buildListingCard,
   buildListingSummary,
 } from "../integrations/linq/message-builder.js";
 import { createActionToken } from "../security/action-tokens.js";
@@ -27,11 +28,21 @@ export interface PresentBatchOutput {
   controlMessageId: string | null;
 }
 
+export interface PresentationOptions {
+  /** "card" opens inside Linq's app; "link" opens in Safari. */
+  delivery?: "card" | "link";
+}
+
 export class PresentationService {
+  private readonly delivery: "card" | "link";
+
   constructor(
     private readonly repos: Repositories,
     private readonly linq: LinqAdapter,
-  ) {}
+    options: PresentationOptions = {},
+  ) {
+    this.delivery = options.delivery ?? env.INSPECT_DELIVERY;
+  }
 
   /**
    * Sends one intro, then three separate apartments (summary, media, rich link
@@ -73,15 +84,16 @@ export class PresentationService {
         mediaMessageId = media.messageId;
       }
 
-      // A rich link must travel alone to render as a preview card.
       const token = createActionToken({
         listingId: ranked.listing.id,
         userId: input.userId,
         batchId: batch.id,
       });
-      const link = await this.linq.sendRichLink({
-        chatId: input.chatId,
-        conversationId: input.conversationId,
+      const link = await this.sendInspectCard({
+        input,
+        ranked,
+        position,
+        total: input.ranked.length,
         url: `${env.BASE_URL}/l/${token}`,
         idempotencyKey: idempotencyKeys.listingLink(batch.id, ranked.listing.id),
       });
@@ -125,5 +137,53 @@ export class PresentationService {
       presentedListingIds,
       controlMessageId: control.messageId,
     };
+  }
+
+  /**
+   * The inspect view arrives as an app card, which opens inside Linq's iMessage
+   * app rather than bouncing the user out to a browser.
+   *
+   * If the card cannot be sent — no handle on file, or the platform refuses the
+   * action — the same URL still goes out as a rich link. A degraded preview beats
+   * an apartment the user cannot open.
+   */
+  private async sendInspectCard(args: {
+    input: PresentBatchInput;
+    ranked: RankedListing;
+    position: number;
+    total: number;
+    url: string;
+    idempotencyKey: string;
+  }): Promise<SendResult> {
+    const { input, ranked, url, idempotencyKey } = args;
+    const user = await this.repos.users.findById(input.userId);
+    const card = buildListingCard(ranked, args.position, args.total, input.language);
+
+    if (this.delivery === "card" && user?.linqHandle && !user.linqHandle.startsWith("deleted:")) {
+      try {
+        return await this.linq.sendActionCard({
+          chatId: input.chatId,
+          conversationId: input.conversationId,
+          toHandle: user.linqHandle,
+          url,
+          title: card.title,
+          subtitle: card.subtitle,
+          button: card.button,
+          idempotencyKey,
+        });
+      } catch (error) {
+        logger.warn(
+          { listingId: ranked.listing.id, error: String(error) },
+          "app card rejected, falling back to a rich link",
+        );
+      }
+    }
+
+    return this.linq.sendRichLink({
+      chatId: input.chatId,
+      conversationId: input.conversationId,
+      url,
+      idempotencyKey,
+    });
   }
 }

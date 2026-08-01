@@ -17,6 +17,7 @@ import { ApplicationService } from "./application-service.js";
 import { ReactionService } from "./reaction-service.js";
 import { ConversationService } from "./conversation-service.js";
 import { RenewalService } from "./renewal-service.js";
+import { ExperienceService } from "./experience-service.js";
 
 export interface Container {
   db: Database;
@@ -32,6 +33,7 @@ export interface Container {
   reactions: ReactionService;
   conversation: ConversationService;
   renewal: RenewalService;
+  experience: ExperienceService;
 }
 
 export interface ContainerOverrides {
@@ -67,6 +69,7 @@ export function createContainer(overrides: ContainerOverrides = {}): Container {
   const applications = new ApplicationService(repos, contact, llm, universities);
   const reactions = new ReactionService(repos);
   const renewal = new RenewalService(repos, linq);
+  const experience = new ExperienceService(repos, linq);
   const conversation = new ConversationService({
     repos,
     linq,
@@ -80,7 +83,7 @@ export function createContainer(overrides: ContainerOverrides = {}): Container {
 
   return {
     db, repos, linq, housing, llm, universities, contact,
-    search, presentation, applications, reactions, conversation, renewal,
+    search, presentation, applications, reactions, conversation, renewal, experience,
   };
 }
 

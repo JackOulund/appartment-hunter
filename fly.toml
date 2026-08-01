@@ -1,0 +1,39 @@
+# Change `app` to whatever name you create, then keep it in sync with BASE_URL.
+app = "jack-housing-agent"
+primary_region = "arn"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+  # Points at the mounted volume below, so the database survives a deploy.
+  DATABASE_URL = "file:/data/housing-agent.db"
+  # Must match the deployed hostname — listing links are built from it.
+  BASE_URL = "https://jack-housing-agent.fly.dev"
+  HOUSING_PROVIDER = "mock"
+  LLM_PROVIDER = "anthropic"
+  LINQ_DRY_RUN = "false"
+  # Landlord contact stays simulated. Setting this to false makes the agent
+  # capable of messaging real landlords.
+  CONTACT_DRY_RUN = "true"
+  LOG_LEVEL = "info"
+
+[[mounts]]
+  source = "housing_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_start_machines = true
+  # Kept warm: a cold start mid-demo would stall the first webhook.
+  auto_stop_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "15s"

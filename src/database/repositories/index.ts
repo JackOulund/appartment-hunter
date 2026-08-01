@@ -527,6 +527,52 @@ export class DecisionRepository {
   }
 }
 
+// ---------------------------------------------------------- view events
+
+export type ListingViewEventRow = typeof t.listingViewEvents.$inferSelect;
+
+export class ListingViewEventRepository {
+  constructor(private readonly db: Database) {}
+
+  async record(input: {
+    userId: string;
+    listingId: string;
+    batchId?: string | null;
+    event: string;
+  }): Promise<void> {
+    await this.db.insert(t.listingViewEvents).values({
+      id: newId("vev"),
+      userId: input.userId,
+      listingId: input.listingId,
+      batchId: input.batchId ?? null,
+      event: input.event,
+    });
+  }
+
+  async listForUser(userId: string): Promise<ListingViewEventRow[]> {
+    return this.db
+      .select()
+      .from(t.listingViewEvents)
+      .where(eq(t.listingViewEvents.userId, userId))
+      // rowid, not createdAt: several events can land inside the same millisecond.
+      .orderBy(sql`rowid`);
+  }
+
+  async listForListing(userId: string, listingId: string): Promise<ListingViewEventRow[]> {
+    return this.db
+      .select()
+      .from(t.listingViewEvents)
+      .where(
+        and(eq(t.listingViewEvents.userId, userId), eq(t.listingViewEvents.listingId, listingId)),
+      )
+      .orderBy(sql`rowid`);
+  }
+
+  async deleteForUser(userId: string): Promise<void> {
+    await this.db.delete(t.listingViewEvents).where(eq(t.listingViewEvents.userId, userId));
+  }
+}
+
 // -------------------------------------------------------- applications
 
 export type ApplicationRow = typeof t.applications.$inferSelect;
@@ -719,6 +765,7 @@ export interface Repositories {
   searchRuns: SearchRunRepository;
   batches: BatchRepository;
   decisions: DecisionRepository;
+  viewEvents: ListingViewEventRepository;
   applications: ApplicationRepository;
   leases: LeaseRepository;
   webhookEvents: WebhookEventRepository;
@@ -734,6 +781,7 @@ export function createRepositories(db: Database): Repositories {
     searchRuns: new SearchRunRepository(db),
     batches: new BatchRepository(db),
     decisions: new DecisionRepository(db),
+    viewEvents: new ListingViewEventRepository(db),
     applications: new ApplicationRepository(db),
     leases: new LeaseRepository(db),
     webhookEvents: new WebhookEventRepository(db),

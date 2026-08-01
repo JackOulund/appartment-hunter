@@ -74,19 +74,23 @@ describe("search and presentation", () => {
     const summaries = h.linq.listingSummaries();
     expect(summaries).toHaveLength(3);
 
-    // Each apartment gets its own summary, media and rich link message.
+    // Each apartment gets its own summary, media and inspect-view card.
     expect(h.linq.sent.filter((m) => m.kind === "media")).toHaveLength(3);
-    expect(h.linq.sent.filter((m) => m.kind === "rich_link")).toHaveLength(3);
+    expect(h.linq.cards()).toHaveLength(3);
   });
 
-  it("sends each rich link as its own message, never combined", async () => {
+  it("sends each inspect card as its own message, never combined", async () => {
     const h = await createHarness();
     await completeOnboarding(h);
     await h.say("SEARCH");
 
-    for (const message of h.linq.sent.filter((m) => m.kind === "rich_link")) {
+    const cards = h.linq.cards();
+    expect(cards).toHaveLength(3);
+    for (const message of cards) {
+      // A card is the whole message — one URL, no wrapped text alongside it.
       expect(message.body.startsWith("http")).toBe(true);
       expect(message.body).not.toContain("\n");
+      expect(message.card?.url).toBe(message.body);
     }
   });
 

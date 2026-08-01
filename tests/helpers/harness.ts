@@ -7,6 +7,7 @@ import * as schema from "../../src/database/schema.js";
 import { createContainer, type Container } from "../../src/application/container.js";
 import { MockHousingProvider } from "../../src/integrations/housing/mock-housing-provider.js";
 import type {
+  ActionCardMessage,
   LinqAdapter,
   MediaMessage,
   RichLinkMessage,
@@ -20,11 +21,14 @@ const migrationsFolder = join(
 );
 
 export interface SentMessage {
-  kind: "text" | "media" | "rich_link";
+  kind: "text" | "media" | "rich_link" | "action_card";
   chatId: string;
   body: string;
   messageId: string;
   idempotencyKey: string;
+  /** Handle-targeted sends only — app cards go to a handle, not a chat. */
+  toHandle?: string;
+  card?: { title: string; subtitle: string | undefined; button: string | undefined; url: string };
 }
 
 /** Records what would have been sent, and enforces idempotency like the real client. */
@@ -57,6 +61,17 @@ export class FakeLinq implements LinqAdapter {
   async sendRichLink(m: RichLinkMessage): Promise<SendResult> {
     return this.record("rich_link", m.chatId, m.url, m.idempotencyKey);
   }
+  async sendActionCard(m: ActionCardMessage): Promise<SendResult> {
+    const result = this.record("action_card", m.chatId, m.url, m.idempotencyKey);
+    if (!result.deduplicated) {
+      const sent = this.sent.at(-1);
+      if (sent) {
+        sent.toHandle = m.toHandle;
+        sent.card = { title: m.title, subtitle: m.subtitle, button: m.button, url: m.url };
+      }
+    }
+    return result;
+  }
   async startTyping(chatId: string): Promise<void> {
     this.typing.push(chatId);
   }
@@ -73,6 +88,9 @@ export class FakeLinq implements LinqAdapter {
   }
   lastText(): string {
     return this.texts().at(-1) ?? "";
+  }
+  cards(): SentMessage[] {
+    return this.sent.filter((m) => m.kind === "action_card");
   }
   listingSummaries(): SentMessage[] {
     return this.sent.filter((m) => m.kind === "text" && / of \d — /.test(m.body));

@@ -1,7 +1,7 @@
 # Implementation status
 
 Last verified: all items below were run, not just written.
-`npm run typecheck` clean · `npm test` 149 passing · `npm run build` succeeds ·
+`npm run typecheck` clean · `npm test` 161 passing · `npm run build` succeeds ·
 server boots and the full demo flow works end to end.
 
 ## Built and verified
@@ -48,8 +48,13 @@ server boots and the full demo flow works end to end.
 ### Product flow
 - [x] University recognition, campus disambiguation (never silently picked)
 - [x] One question at a time; confirmation summary; single-field corrections
-- [x] Search → three apartments, each as separate summary / media / rich-link
-      messages; rich links sent alone so the preview card renders
+- [x] Search → three apartments, each as separate summary / media / app-card
+      messages; the card is the whole message, as the platform requires
+- [x] Inspect view delivered as a Linq app card (`message.action`, handle-targeted),
+      falling back to a rich link if the card is refused
+- [x] The page beacons back (`opened`, `gallery_viewed`, `reject_clicked`,
+      `contact_clicked`, `closed`); one follow-up when an apartment was inspected
+      but not decided, suppressed on repeats and mid-application
 - [x] Message ids persisted per apartment; reactions routed correctly
 - [x] Batch control message handled separately from apartment reactions
 - [x] Reaction removal undoes a like or rejection, never a sent application

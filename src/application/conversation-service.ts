@@ -823,6 +823,7 @@ export class ConversationService {
     language: Language,
   ): Promise<void> {
     await this.repos.decisions.deleteForUser(user.id);
+    await this.repos.viewEvents.deleteForUser(user.id);
     await this.repos.conversations.patch(conversation.id, {
       statePayload: "{}",
       activeBatchId: null,

@@ -90,7 +90,7 @@ underlying fact or the score.
 
 ## Reaction routing
 
-Each apartment is sent as three separate messages (summary, media, rich link) and
+Each apartment is sent as three separate messages (summary, media, app card) and
 every message id is stored in `listing_presentations`. The batch control message
 id is stored separately on `listing_batches`. A tapback is resolved by looking up
 its target message id, which is why an apartment reaction can never be confused
@@ -99,6 +99,44 @@ with a "show me three more" reaction.
 Removing a reaction reverts a like or rejection to `unseen` — unless the listing
 has already reached `contact_requested` or `contacted`, in which case it is
 ignored. An application that has been sent is never undone by a tapback.
+
+## The inspect view
+
+The third message per apartment is a Linq **app card** — `message.action` with
+`experience: "link"`. Tapping it opens the apartment page inside Linq's iMessage
+app rather than throwing the user out to Safari.
+
+Two platform rules shape the code:
+
+- **Actions are handle-targeted.** They go to `POST /v3/messages` with `to: [handle]`.
+  The chat-scoped send endpoint rejects them, which is why `sendActionCard` is the
+  only adapter method that takes a handle instead of a chat id.
+- **A new chat cannot open with an action.** Every card here goes into a
+  conversation the user started, so a chat always exists by then.
+
+The `action` field is real but missing from the generated SDK types (the SDK's own
+`MessageContent` docstring describes it, and 0.32.0's changelog adds it). One cast
+in `linq-client.ts` bridges that gap; it disappears when the SDK regenerates. If a
+card is refused for any reason, presentation falls back to a plain rich link with
+the same URL — a degraded preview beats an apartment the user cannot open.
+
+### Closing the loop
+
+The page reports what the user did back into the conversation. `navigator.sendBeacon`
+posts to `POST /l/:token/event`, which survives the page being closed — the moment
+we most want to hear about. The signed action token *is* the session id, so there is
+no second identifier and no unauthenticated endpoint.
+
+Accepted events are a closed set: `opened`, `gallery_viewed`, `reject_clicked`,
+`contact_clicked`, `closed`. Anything else is refused rather than stored. They land
+in `listing_view_events` as observations — never decisions. A decision still comes
+only from a tapback, an explicit reply, or a tap on the page.
+
+Exactly one event produces a message: `closed`, when the user inspected an
+apartment and left without deciding. The agent then offers the next step once, and
+names the reply that would take it (`CONTACT 2`). It is suppressed when the user has
+already acted, when the conversation is mid-application or paused, and — via the
+outbound idempotency key — on every repeat beacon.
 
 ## Security
 

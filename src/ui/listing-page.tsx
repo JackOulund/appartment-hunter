@@ -66,6 +66,44 @@ const CONFIRM_REJECT_SCRIPT = `
 })();
 `;
 
+/**
+ * Reports back into the conversation. `sendBeacon` is used because it survives the
+ * page being closed, which is exactly the moment we most want to hear about.
+ *
+ * `closed` is suppressed once the user has tapped Reject or Contact: those flows
+ * message the user themselves, and suppressing it here removes the race between
+ * two beacons arriving out of order.
+ */
+function beaconScript(token: string): string {
+  return `
+(function () {
+  var url = '/l/' + ${JSON.stringify(token)} + '/event';
+  var acted = false;
+  var send = function (event) {
+    var body = JSON.stringify({ event: event });
+    if (navigator.sendBeacon) { navigator.sendBeacon(url, body); return; }
+    try { fetch(url, { method: 'POST', body: body, keepalive: true }); } catch (e) {}
+  };
+
+  send('opened');
+
+  var gallery = document.querySelector('.gallery');
+  if (gallery) {
+    gallery.addEventListener('scroll', function () { send('gallery_viewed'); }, { passive: true, once: true });
+  }
+  var rejectForm = document.getElementById('reject-form');
+  if (rejectForm) {
+    rejectForm.addEventListener('submit', function () { acted = true; send('reject_clicked'); });
+  }
+  var contact = document.getElementById('contact-link');
+  if (contact) {
+    contact.addEventListener('click', function () { acted = true; send('contact_clicked'); });
+  }
+  window.addEventListener('pagehide', function () { if (!acted) send('closed'); });
+})();
+`;
+}
+
 export function ListingPage(props: ListingPageProps) {
   const { listing, language } = props;
   const t = T[language];
@@ -205,6 +243,7 @@ export function ListingPage(props: ListingPageProps) {
             </button>
           </form>
           <a
+            id="contact-link"
             class={`btn btn-primary${props.alreadyContacted ? " " : ""}`}
             href={`/l/${props.token}/contact`}
             style="flex:1"
@@ -213,7 +252,11 @@ export function ListingPage(props: ListingPageProps) {
           </a>
         </nav>
       </div>
-      <script dangerouslySetInnerHTML={{ __html: GALLERY_SCRIPT + CONFIRM_REJECT_SCRIPT }} />
+      <script
+        dangerouslySetInnerHTML={{
+          __html: GALLERY_SCRIPT + CONFIRM_REJECT_SCRIPT + beaconScript(props.token),
+        }}
+      />
     </Layout>
   );
 }

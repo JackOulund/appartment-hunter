@@ -1,0 +1,17 @@
+# Secrets never enter the image — they are set with `fly secrets set`.
+.env
+.env.*
+!.env.example
+
+node_modules
+dist
+data
+*.db
+*.db-journal
+
+.git
+.gitignore
+tests
+docs
+*.md
+.DS_Store

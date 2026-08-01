@@ -73,6 +73,63 @@ export function buildListingSummary(
   return lines.join("\n");
 }
 
+export interface ListingCard {
+  title: string;
+  subtitle: string;
+  button: string;
+}
+
+/**
+ * The app card that opens the inspect view. Every value here is a fact from the
+ * listing or the deterministic score — the card is the first thing the user sees,
+ * so nothing on it may be phrased by the model.
+ */
+export function buildListingCard(
+  ranked: RankedListing,
+  position: number,
+  total: number,
+  language: Language,
+): ListingCard {
+  const { listing } = ranked;
+  const facts: string[] = [`${money(listing.monthlyRent, listing.currency, language)}/${language === "sv" ? "mån" : "month"}`];
+
+  if (listing.rooms !== null) {
+    facts.push(
+      language === "sv"
+        ? `${listing.rooms} rum`
+        : `${listing.rooms} room${listing.rooms === 1 ? "" : "s"}`,
+    );
+  }
+  if (listing.sizeSquareMeters !== null) facts.push(`${listing.sizeSquareMeters} m²`);
+  if (ranked.commuteMinutes !== null) {
+    facts.push(
+      language === "sv"
+        ? `${ranked.commuteMinutes} min till campus`
+        : `${ranked.commuteMinutes} min to campus`,
+    );
+  }
+
+  return {
+    title: `${position}/${total} · ${listing.title}`,
+    subtitle: facts.join(" · "),
+    button: language === "sv" ? "Visa" : "View",
+  };
+}
+
+/**
+ * Sent after the user opened the inspect view and closed it without deciding.
+ * A nudge only: it changes nothing, and it names the reply that would.
+ */
+export function buildInspectFollowUp(
+  listingTitle: string,
+  position: number,
+  language: Language,
+): string {
+  return language === "sv"
+    ? `Du tittade på ${listingTitle} men bestämde dig inte. Vill du att jag förbereder ett meddelande till hyresvärden? Svara KONTAKTA ${position}, eller strunta i det här om den inte passade.`
+    : `You had a look at ${listingTitle} but didn't decide. Want me to prepare a message to the landlord? Reply CONTACT ${position}, or ignore this if it wasn't right.`;
+}
+
 export function buildBatchControlMessage(language: Language): string {
   return language === "sv"
     ? "Vill du se tre till? Reagera 👍 för fler eller 👎 för att pausa sökningen."

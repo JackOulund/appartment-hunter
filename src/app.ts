@@ -41,7 +41,20 @@ export function createApp(overrides: ContainerOverrides = {}): { app: Hono; cont
   const container = createContainer(overrides);
   const app = new Hono();
 
-  app.use("*", secureHeaders());
+  // The inspect view is opened inside Linq's iMessage app, so it must survive
+  // being embedded cross-origin: SAMEORIGIN framing and a same-origin resource
+  // policy would both block that. It is a read-only page, so nothing is at risk.
+  //
+  // Everything else keeps the strict defaults — above all the application review
+  // page, where framing would be a clickjacking route onto an irreversible SEND.
+  const strict = secureHeaders();
+  const embeddable = secureHeaders({
+    xFrameOptions: false,
+    crossOriginResourcePolicy: "cross-origin",
+    crossOriginOpenerPolicy: false,
+  });
+  const isEmbeddable = (path: string) => path.startsWith("/l/") || path === "/card-check";
+  app.use("*", (c, next) => (isEmbeddable(c.req.path) ? embeddable(c, next) : strict(c, next)));
   app.use(
     "*",
     rateLimit({
