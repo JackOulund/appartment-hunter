@@ -1,39 +1,23 @@
-# Change `app` to whatever name you create, then keep it in sync with BASE_URL.
-app = "jack-housing-agent"
-primary_region = "arn"
+# fly.toml app configuration file generated for appartment-hunter on 2026-08-01T12:56:03Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'appartment-hunter'
+primary_region = 'iad'
 
 [build]
 
-[env]
-  NODE_ENV = "production"
-  PORT = "3000"
-  # Points at the mounted volume below, so the database survives a deploy.
-  DATABASE_URL = "file:/data/housing-agent.db"
-  # Must match the deployed hostname — listing links are built from it.
-  BASE_URL = "https://jack-housing-agent.fly.dev"
-  HOUSING_PROVIDER = "mock"
-  LLM_PROVIDER = "anthropic"
-  LINQ_DRY_RUN = "false"
-  # Landlord contact stays simulated. Setting this to false makes the agent
-  # capable of messaging real landlords.
-  CONTACT_DRY_RUN = "true"
-  LOG_LEVEL = "info"
-
-[[mounts]]
-  source = "housing_data"
-  destination = "/data"
-
 [http_service]
-  internal_port = 3000
+  internal_port = 8080
   force_https = true
+  auto_stop_machines = 'stop'
   auto_start_machines = true
-  # Kept warm: a cold start mid-demo would stall the first webhook.
-  auto_stop_machines = false
-  min_machines_running = 1
+  min_machines_running = 0
+  processes = ['app']
 
-  [[http_service.checks]]
-    method = "GET"
-    path = "/health"
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "15s"
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256
