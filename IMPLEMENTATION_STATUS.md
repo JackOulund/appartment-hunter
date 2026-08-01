@@ -1,7 +1,7 @@
 # Implementation status
 
 Last verified: all items below were run, not just written.
-`npm run typecheck` clean · `npm test` 161 passing · `npm run build` succeeds ·
+`npm run typecheck` clean · `npm test` 169 passing · `npm run build` succeeds ·
 server boots and the full demo flow works end to end.
 
 ## Built and verified
@@ -28,7 +28,8 @@ server boots and the full demo flow works end to end.
 - [x] `HousingProvider` interface + `MockHousingProvider` (22 listings, 5 cities)
 - [x] Mock catalogue includes duplicates, expired, inactive, over-budget,
       missing-field, contact-success and contact-failure cases
-- [x] `QasaHousingProvider` boundary that refuses to run — no invented endpoints
+- [x] `QasaHousingProvider` using Claude web search restricted to `qasa.com`,
+      with strict validation and manual handoff back to Qasa
 - [x] `UniversityProvider` + static dataset (10 universities, campuses, coords)
 - [x] `LlmProvider` interface + full deterministic mock; all output Zod-validated
 - [x] `HousingContactService` with capability-aware routing
@@ -107,7 +108,8 @@ server boots and the full demo flow works end to end.
   group behaviour, and iMessage typing indicators are one-to-one only
 - **Postgres** — repository interfaces are the seam; SQLite is what runs
 - **Shared-store rate limiting** — the limiter is in-memory, per process
-- **Real Qasa integration** — blocked on authorisation, see the doc
+- **Production Qasa partner feed/API** — demo discovery uses Claude web search;
+  production still needs an authorised feed, see the doc
 - **Native Messages Extension** — out of scope for this MVP by design
 - **Local simulator** — the `/dev/*` routes and demo page were removed once the
   real iMessage path worked. Testing is now either the test suite or a real

@@ -2,7 +2,7 @@
 
 An iMessage housing agent for students who have just been accepted to a
 university. The student texts *"I got accepted to Lund University"* and the agent
-collects a few preferences, searches, ranks, and sends the three best apartments
+collects a few preferences, discovers or searches, ranks, and sends the three best apartments
 as individual iMessages with photos and tappable cards. 👍 / 👎 shortlists or
 rejects; the full apartment page opens in the browser; contacting a landlord
 always requires an explicit confirmation.
@@ -32,6 +32,23 @@ npm run dev
 ```
 
 Then expose it and register the webhook — see **Going live** below.
+
+### Use live Qasa discovery for the demo
+
+Set the following values in `.env` instead of seeding mock listings:
+
+```env
+HOUSING_PROVIDER=qasa
+ANTHROPIC_API_KEY=sk-ant-...
+CLAUDE_MODEL=claude-haiku-4-5
+```
+
+The student's confirmed preferences are converted into a Claude web search
+whose API-level allow-list contains only `qasa.com`. Results are validated,
+persisted, filtered and ranked before Linq sends the best three. No Qasa login or
+automated landlord contact is used; every contact action hands the student back
+to the original Qasa listing. See `docs/QASA_INTEGRATION.md` for safeguards and
+limitations.
 
 ## Going live
 
@@ -79,9 +96,14 @@ Copy `.env.example`. Every value has a working default except real credentials.
 | `LINQ_WEBHOOK_SECRET` | — | `whsec_…`, from webhook registration |
 | `LINQ_WEBHOOK_VERSION` | `2026-02-03` | pinned on the subscription URL |
 | `LINQ_DRY_RUN` | `true` | `false` requires the three values above |
-| `HOUSING_PROVIDER` | `mock` | `qasa` is a boundary only — see below |
+| `HOUSING_PROVIDER` | `mock` | `qasa` uses Claude web search restricted to `qasa.com` |
 | `CONTACT_DRY_RUN` | `true` | `false` contacts real landlords |
 | `LLM_PROVIDER` | `mock` | `anthropic` uses Claude for extraction and drafting |
+| `ANTHROPIC_API_KEY` | — | required by `HOUSING_PROVIDER=qasa`; `LLM_API_KEY` is an alias |
+| `CLAUDE_MODEL` | `LLM_MODEL` | Qasa discovery override; `claude-haiku-4-5` is economical for a demo |
+| `QASA_SEARCH_MAX_USES` | `5` | maximum domain-restricted searches per request |
+| `QASA_SEARCH_LIMIT` | `12` | candidates requested before deterministic ranking |
+| `QASA_SEARCH_TIMEOUT_MS` | `45000` | timeout for Qasa discovery |
 | `ACTION_TOKEN_SECRET` | dev value | **must** be changed in production |
 | `INTERNAL_JOB_SECRET` | dev value | bearer token for the renewal job route |
 | `RENEWAL_LEAD_DAYS` | `30` | how early to start the next search |
@@ -154,7 +176,7 @@ from the student's own phone number.
 ## Tests
 
 ```sh
-npm test     # 161 tests
+npm test
 ```
 
 Covering: university extraction and campus ambiguity, preference parsing in
@@ -163,8 +185,8 @@ filters, ranking determinism, deduplication, exclusion of previously seen
 listings, exactly-three selection, reaction-to-listing mapping, batch-control
 reactions, reaction removal, webhook signature verification and deduplication,
 expired and forged action tokens, reject idempotency, confirmation expiry,
-duplicate-send prevention, dry-run contact behaviour, renewal date calculation
-and privacy deletion.
+duplicate-send prevention, dry-run contact behaviour, renewal date calculation,
+privacy deletion, and Qasa domain restriction and result validation.
 
 No test requires Linq, Qasa, landlord or LLM credentials.
 
@@ -212,13 +234,14 @@ No test requires Linq, Qasa, landlord or LLM credentials.
   rather than widening the search automatically.
 - **The renewal job** sends a reminder only; it never starts a search or an
   application by itself.
-- **Qasa is not integrated** — see `docs/QASA_INTEGRATION.md`.
+- **Qasa discovery is demo-grade** — search-index coverage can be incomplete or
+  stale; production should use an authorised Qasa partner API or licensed feed.
 - **This is not a native Messages Extension** — see
   `docs/NATIVE_IMESSAGE_EXTENSION.md`.
 
 ## Further reading
 
 - `docs/ARCHITECTURE.md` — layering, the LLM boundary, ranking, reaction routing
-- `docs/QASA_INTEGRATION.md` — what would unblock a real Qasa provider
+- `docs/QASA_INTEGRATION.md` — Qasa discovery, safeguards and local setup
 - `docs/NATIVE_IMESSAGE_EXTENSION.md` — how an Apple extension would reuse this backend
 - `IMPLEMENTATION_STATUS.md` — what is built and what is not

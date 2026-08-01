@@ -42,6 +42,11 @@ const schema = z.object({
   LLM_API_KEY: z.string().default(""),
   ANTHROPIC_API_KEY: z.string().default(""),
   LLM_MODEL: z.string().default("claude-opus-5"),
+  CLAUDE_MODEL: z.string().default(""),
+
+  QASA_SEARCH_MAX_USES: z.coerce.number().int().min(1).max(10).default(5),
+  QASA_SEARCH_LIMIT: z.coerce.number().int().min(1).max(20).default(12),
+  QASA_SEARCH_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(120_000).default(45_000),
 
   ACTION_TOKEN_SECRET: z.string().min(16).default("dev-only-action-token-secret-change-me"),
   INTERNAL_JOB_SECRET: z.string().min(8).default("dev-only-internal-job-secret"),
@@ -55,6 +60,7 @@ const schema = z.object({
 export type Env = z.infer<typeof schema> & {
   linqApiKey: string;
   llmApiKey: string;
+  claudeModel: string;
   isProduction: boolean;
 };
 
@@ -68,6 +74,7 @@ function build(source: NodeJS.ProcessEnv): Env {
   const env = parsed.data;
   const linqApiKey = env.LINQ_API_KEY || env.LINQ_API_V3_API_KEY;
   const llmApiKey = env.LLM_API_KEY || env.ANTHROPIC_API_KEY;
+  const claudeModel = env.CLAUDE_MODEL || env.LLM_MODEL;
   const isProduction = env.NODE_ENV === "production";
 
   // Live mode needs real credentials; failing here beats failing on the first webhook.
@@ -76,8 +83,10 @@ function build(source: NodeJS.ProcessEnv): Env {
       "LINQ_DRY_RUN=false requires LINQ_API_KEY, LINQ_WEBHOOK_SECRET and LINQ_FROM_NUMBER to be set.",
     );
   }
-  if (env.LLM_PROVIDER === "anthropic" && !llmApiKey) {
-    throw new Error("LLM_PROVIDER=anthropic requires LLM_API_KEY (or ANTHROPIC_API_KEY).");
+  if ((env.LLM_PROVIDER === "anthropic" || env.HOUSING_PROVIDER === "qasa") && !llmApiKey) {
+    throw new Error(
+      "LLM_PROVIDER=anthropic or HOUSING_PROVIDER=qasa requires LLM_API_KEY (or ANTHROPIC_API_KEY).",
+    );
   }
   if (isProduction && env.ACTION_TOKEN_SECRET.startsWith("dev-only")) {
     throw new Error("ACTION_TOKEN_SECRET must be set to a real secret in production.");
@@ -87,6 +96,7 @@ function build(source: NodeJS.ProcessEnv): Env {
     ...env,
     linqApiKey,
     llmApiKey,
+    claudeModel,
     isProduction,
   };
 }

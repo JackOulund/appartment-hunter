@@ -1,65 +1,85 @@
-# Qasa integration status
+# Qasa discovery integration
 
-**Status: not active. The application uses `HOUSING_PROVIDER=mock`.**
+## Status
 
-`src/integrations/housing/qasa-housing-provider.ts` exists as an adapter boundary
-only. Every method throws `provider_not_configured` and points here.
+The `qasa` housing provider is active when `HOUSING_PROVIDER=qasa`. It uses
+Anthropic's server-side web search with `allowed_domains: ["qasa.com"]`, then
+normalises the grounded result into the existing `HousingListing` model. The
+normal TypeScript hard filters, ranking, persistence and Linq presentation run
+unchanged after discovery.
 
-## Why it is not implemented
+This is a small-volume demo integration, not a Qasa partner feed. A production
+deployment should replace the search client with an authorised Qasa API or
+licensed feed while keeping the same `HousingProvider` interface.
 
-Qasa does not publish a partner API that this project is authorised to call. The
-remaining ways to obtain their data are all off-limits:
+## What happens on SEARCH
 
-| Approach | Why it is excluded |
-| --- | --- |
-| Scraping authenticated pages | Requires holding a user's credentials and acting as them |
-| Driving a logged-in session headlessly | Same problem, plus it circumvents anti-bot protection |
-| Bypassing rate limits or bot detection | Adversarial to the operator |
-| Submitting applications as the user | Impersonation; the user cannot review what was sent |
-| Fabricating a "contact sent" result | Reports success for something that never happened |
+1. The conversation service has already collected and confirmed the student's
+   preferences.
+2. `QasaHousingProvider` asks Claude to search for a bounded number of current
+   listings, with the web tool restricted to `qasa.com`.
+3. Claude returns structured data through a Zod-backed output schema.
+4. The provider accepts only HTTPS Qasa `/home/<numeric-id>` URLs, positive
+   rents, non-negative room/size values, valid dates and active listings.
+5. Landlord names, contact information and profile text are never requested or
+   stored. Missing optional facts remain `null`.
+6. Listings are persisted under the Qasa listing id, filtered and ranked by the
+   existing deterministic domain code.
+7. Linq sends the three best results. Contact is always a `manual_handoff` back
+   to the original Qasa listing.
 
-The provider deliberately fails loudly instead of degrading into any of these.
+There is no Qasa login, browser automation, private endpoint discovery,
+sequential-id enumeration, or automated landlord outreach.
 
-## What would unblock it
+## Configuration
 
-Any **one** of the following is sufficient:
-
-1. **A partner/affiliate API agreement** — documented endpoints, an API key, and
-   terms that permit programmatic search and (optionally) contact.
-2. **A licensed data feed** — a periodic export the operator provides.
-3. **A user-supplied dataset** — listings the user exports themselves and gives
-   the agent explicitly. Read-only, no contact capability.
-4. **An official OAuth integration** — the user authorises this app through
-   Qasa's own consent screen, with scopes covering the actions taken.
-
-## Implementing it once authorised
-
-The interface to satisfy is in `src/integrations/housing/housing-provider.ts`:
-
-```ts
-search(input: HousingSearchInput): Promise<HousingSearchResult>
-getListing(id: string): Promise<HousingListing | null>
-getContactCapability(listing: HousingListing): Promise<HousingContactCapability>
-contact?(input: HousingContactInput): Promise<HousingContactResult>
+```env
+HOUSING_PROVIDER=qasa
+ANTHROPIC_API_KEY=sk-ant-...
+CLAUDE_MODEL=claude-haiku-4-5
+QASA_SEARCH_MAX_USES=5
+QASA_SEARCH_LIMIT=12
+QASA_SEARCH_TIMEOUT_MS=45000
 ```
 
-Steps:
+`LLM_API_KEY` is accepted as an alias for `ANTHROPIC_API_KEY`. `CLAUDE_MODEL`
+falls back to `LLM_MODEL` when omitted. The application refuses to start with
+the Qasa provider and no Anthropic key.
 
-1. Map Qasa's listing shape onto `HousingListing` (`src/domain/entities.ts`).
-   Missing fields must be `null`, never invented — the ranking engine already
-   scores data completeness and handles nulls.
-2. Set `contactCapability` honestly per listing. If Qasa does not expose a
-   programmatic contact route, return `manual_handoff` with the listing URL.
-   Do **not** implement `contact()` at all rather than faking it.
-3. Set `HOUSING_PROVIDER=qasa`. Nothing else in the app changes — the ranking,
-   presentation and contact flows are provider-agnostic.
-4. Treat all listing text as untrusted: it flows through
-   `sanitiseUntrusted()` before reaching any LLM prompt.
+`QASA_SEARCH_MAX_USES` limits searches within one Claude request, and
+`QASA_SEARCH_LIMIT` caps structured candidates at 20. `MORE` performs another
+current search; database decisions prevent already presented listings from
+being sent again.
 
-## Until then
+The Anthropic organisation must have web search enabled. If it is disabled, or
+Qasa results are unavailable, the search fails with a controlled
+`provider_unavailable` error rather than fabricating listings.
 
-The `MockHousingProvider` ships 22 realistic listings across Lund, Malmö,
-Stockholm, Uppsala and Gothenburg, deliberately including duplicates, expired
-listings, over-budget listings, records with missing optional fields, and both
-successful and failing simulated contact outcomes. Every demo and test path runs
-against it.
+## Local test
+
+```sh
+npm install
+cp .env.example .env
+# Set HOUSING_PROVIDER=qasa and ANTHROPIC_API_KEY in .env
+npm run db:migrate
+npm run dev
+```
+
+Keep `LINQ_DRY_RUN=true` to inspect intended messages without sending anything.
+Complete onboarding in iMessage and send `SEARCH`. Do not run
+`npm run db:seed` for the Qasa flow; that command is only for explicit
+mock-provider development.
+
+Automated tests inject a fake Qasa search client. They assert the domain
+allow-list, normalisation, validation, deduplication and manual handoff without
+making network requests to Anthropic, Qasa or Linq.
+
+## Limitations
+
+- Search-index coverage can be incomplete or stale; a result is not a guarantee
+  that the home remains available.
+- Only listings with enough data for the existing ranking model (title/address,
+  city and a positive rent) are accepted.
+- Coordinates are not inferred, so commute scoring uses its neutral fallback
+  when Qasa search results do not expose coordinates.
+- The production path remains an authorised partner API/feed.
