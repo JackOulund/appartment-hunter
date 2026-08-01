@@ -1,6 +1,7 @@
 import type { ConversationRow, Repositories, UserRow } from "../database/repositories/index.js";
 import type { LinqAdapter } from "../integrations/linq/linq-client.js";
-import type { LlmProvider } from "../integrations/llm/llm-provider.js";
+import type { ExtractedPreferences, LlmProvider, TurnContext } from "../integrations/llm/llm-provider.js";
+import type { TurnDecision } from "../integrations/llm/turn-schema.js";
 import type { UniversityProvider } from "../integrations/university/university-provider.js";
 import type { SearchService } from "./search-service.js";
 import type { PresentationService } from "./presentation-service.js";
@@ -19,6 +20,8 @@ import {
   type Language,
   type SearchPreferences,
 } from "../domain/entities.js";
+import { toCommand, replyFor } from "../domain/intent.js";
+import { guardReply } from "../domain/reply-guard.js";
 import {
   buildCampusQuestion,
   buildCongratulations,
@@ -54,7 +57,12 @@ interface StatePayload extends Record<string, unknown> {
   awaitingDeleteConfirmation?: boolean;
   awaitingContactField?: "fullName" | "email" | "phone";
   language?: Language;
+  /** Rolling window, oldest first, max 6 — mirrors TurnContext.recentTurns. */
+  recentTurns?: { role: "user" | "agent"; text: string }[];
 }
+
+/** Mirrors toCommand's default — a chat reply below this is a guess, not a decision. */
+const MIN_CHAT_CONFIDENCE = 0.6;
 
 export interface ConversationDeps {
   repos: Repositories;
@@ -67,6 +75,11 @@ export interface ConversationDeps {
   reactions: ReactionService;
 }
 
+export interface ConversationOptions {
+  /** Off restores pre-LLM deterministic-only routing without a deploy. */
+  llmIntent?: boolean;
+}
+
 export class ConversationService {
   private readonly repos: Repositories;
   private readonly linq: LinqAdapter;
@@ -76,8 +89,9 @@ export class ConversationService {
   private readonly presentation: PresentationService;
   private readonly applications: ApplicationService;
   private readonly reactions: ReactionService;
+  private readonly llmIntent: boolean;
 
-  constructor(deps: ConversationDeps) {
+  constructor(deps: ConversationDeps, options: ConversationOptions = {}) {
     this.repos = deps.repos;
     this.linq = deps.linq;
     this.llm = deps.llm;
@@ -86,6 +100,7 @@ export class ConversationService {
     this.presentation = deps.presentation;
     this.applications = deps.applications;
     this.reactions = deps.reactions;
+    this.llmIntent = options.llmIntent ?? env.LLM_INTENT;
   }
 
   // ------------------------------------------------------------ plumbing
@@ -139,6 +154,22 @@ export class ConversationService {
       text,
       idempotencyKey: idempotencyKeys.ad_hoc(conversation.id, `${tag}:${Date.now()}`),
     });
+    await this.appendRecentTurn(conversation, "agent", text);
+  }
+
+  /**
+   * Feeds TurnContext.recentTurns. Re-reads the row rather than trusting the
+   * caller's copy, because several say() calls can happen inside one turn.
+   */
+  private async appendRecentTurn(
+    conversation: ConversationRow,
+    role: "user" | "agent",
+    text: string,
+  ): Promise<void> {
+    const fresh = await this.repos.conversations.findById(conversation.id);
+    const current = fresh ? (this.payload(fresh).recentTurns ?? []) : [];
+    const next = [...current, { role, text: text.slice(0, 300) }].slice(-6);
+    await this.repos.conversations.mergePayload(conversation.id, { recentTurns: next });
   }
 
   private async language(conversation: ConversationRow, user: UserRow, text: string): Promise<Language> {
@@ -162,6 +193,7 @@ export class ConversationService {
     }
 
     await this.repos.conversations.patch(conversation.id, { lastInboundMessageId: input.messageId });
+    await this.appendRecentTurn(conversation, "user", input.text);
     await this.linq.startTyping(input.chatId);
 
     const language = await this.language(conversation, user, input.text);
@@ -258,36 +290,158 @@ export class ConversationService {
       return;
     }
 
+    const handled = await this.dispatchCommand({ user, conversation, text, language }, command);
+    if (handled) return;
+
+    // The deterministic parser found nothing actionable — let the model have
+    // one shot at reading intent before falling back to onboarding/extraction.
+    if (this.llmIntent) {
+      const llmHandled = await this.decideWithLlm(ctx);
+      if (llmHandled) return;
+    }
+
+    await this.continueOnboarding(user, conversation, text, language);
+  }
+
+  /**
+   * Runs the action commands the deterministic parser or the LLM proposed.
+   * Returns false for anything it doesn't recognise so the caller can fall
+   * through to the next stage — never throws on an unknown kind.
+   */
+  private async dispatchCommand(
+    ctx: { user: UserRow; conversation: ConversationRow; text: string; language: Language },
+    command: Command,
+  ): Promise<boolean> {
+    const { user, conversation, language } = ctx;
+
     switch (command.kind) {
       case "search":
         await this.startSearch(user, conversation, language);
-        return;
+        return true;
       case "more":
         await this.startSearch(user, conversation, language);
-        return;
+        return true;
       case "stop":
         await this.moveTo(conversation, "AWAITING_CONTACT_SELECTION");
         await this.offerShortlist(user, conversation, language);
-        return;
+        return true;
       case "like":
       case "reject":
         await this.applyPositionalDecision(user, conversation, command, language);
-        return;
+        return true;
       case "contact":
         await this.beginContact(user, conversation, command.positions, language);
-        return;
+        return true;
       case "contact_all_liked":
         await this.beginContactAllLiked(user, conversation, language);
-        return;
+        return true;
       case "change_preference":
         await this.applyPreferenceChange(user, conversation, command, language);
-        return;
+        return true;
       default:
-        break;
+        return false;
+    }
+  }
+
+  /**
+   * The one and only decideTurn call for an inbound message. Never re-enters
+   * itself: dispatchCommand contains no LLM calls, so a command it proposes
+   * is applied deterministically, not re-interpreted.
+   */
+  private async decideWithLlm(ctx: {
+    user: UserRow;
+    conversation: ConversationRow;
+    command: Command;
+    text: string;
+    language: Language;
+  }): Promise<boolean> {
+    const { user, conversation, text, language } = ctx;
+
+    const fresh = (await this.repos.conversations.findById(conversation.id)) ?? conversation;
+    const payload = this.payload(fresh);
+    const state = this.state(fresh);
+    const knownPreferences: Record<string, unknown> = payload.preferences ?? {};
+    const roster = await this.buildRoster(fresh);
+
+    const turnContext: TurnContext = {
+      text,
+      state,
+      language,
+      missingFields: missingRequiredFields(payload.preferences ?? {}),
+      knownPreferences,
+      roster,
+      recentTurns: payload.recentTurns ?? [],
+    };
+
+    let decision: TurnDecision;
+    try {
+      decision = await this.llm.decideTurn(turnContext);
+    } catch (error) {
+      logger.warn({ conversationId: conversation.id, error: String(error) }, "llm decideTurn failed");
+      return false;
     }
 
-    // Nothing deterministic matched — fall back to onboarding/extraction.
-    await this.continueOnboarding(user, conversation, text, language);
+    const command = toCommand(decision);
+    if (command !== null) {
+      logger.info(
+        { conversationId: conversation.id, proposed: command.kind, confidence: decision.confidence },
+        "llm proposed command",
+      );
+      return this.dispatchCommand({ user, conversation, text, language }, command);
+    }
+
+    // Same floor toCommand applies to a proposed command: below it, the model's
+    // chat reply is a guess, not something confident enough to send on its own —
+    // deterministic onboarding takes the message instead.
+    if (decision.command.kind !== "chat" || decision.confidence < MIN_CHAT_CONFIDENCE) return false;
+
+    const reply = replyFor(decision, null);
+    if (reply === null) return false;
+
+    const facts = [
+      ...Object.values(knownPreferences)
+        .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+        .map((value) => String(value)),
+      ...roster.map((r) => `${r.position}. ${r.title} — ${r.monthlyRent} ${r.currency}`),
+    ];
+    const guard = guardReply(reply, facts);
+
+    if (!guard.ok || guard.text === null) {
+      logger.warn({ conversationId: conversation.id, reason: guard.reason }, "llm reply rejected by guard");
+      return false;
+    }
+
+    // In onboarding states the guarded reply rides along with continueOnboarding
+    // instead of being sent on its own, so the user is never double-messaged.
+    if (state === "COLLECTING_PREFERENCES" || state === "CONFIRMING_PREFERENCES") {
+      await this.continueOnboarding(user, conversation, text, language, decision.preferences, guard.text);
+      return true;
+    }
+
+    await this.say(conversation, guard.text, "llm-chat");
+    return true;
+  }
+
+  private async buildRoster(conversation: ConversationRow): Promise<TurnContext["roster"]> {
+    if (!conversation.activeBatchId) return [];
+    const presentations = await this.repos.batches.listPresentations(conversation.activeBatchId);
+    if (presentations.length === 0) return [];
+
+    const listings = await this.repos.listings.findManyById(presentations.map((p) => p.listingId));
+    const byId = new Map(listings.map((listing) => [listing.id, listing]));
+
+    const roster: TurnContext["roster"] = [];
+    for (const presentation of presentations) {
+      const listing = byId.get(presentation.listingId);
+      if (!listing) continue;
+      roster.push({
+        position: presentation.presentationOrder,
+        title: listing.title,
+        monthlyRent: listing.monthlyRent,
+        currency: listing.currency,
+      });
+    }
+    return roster;
   }
 
   // ----------------------------------------------------------- onboarding
@@ -297,6 +451,8 @@ export class ConversationService {
     conversation: ConversationRow,
     text: string,
     language: Language,
+    preextracted?: ExtractedPreferences,
+    phrasedReply?: string | null,
   ): Promise<void> {
     const payload = this.payload(conversation);
 
@@ -306,7 +462,7 @@ export class ConversationService {
       if (chosen) {
         await this.repos.users.update(user.id, { selectedCampusId: chosen.id });
         await this.repos.conversations.mergePayload(conversation.id, { pendingCampusChoices: [] });
-        await this.askNextPreference(user, conversation, language);
+        await this.askNextPreference(user, conversation, language, phrasedReply);
         return;
       }
       const universityName = user.acceptedUniversityId
@@ -326,7 +482,9 @@ export class ConversationService {
     }
 
     // Extract whatever preferences the message contains, then ask for the next gap.
-    const extracted = await this.llm.extractPreferences(text, { language });
+    // A caller that already ran decideTurn passes its extraction in directly so
+    // this never spends a second LLM call on the same message.
+    const extracted = preextracted ?? (await this.llm.extractPreferences(text, { language }));
     const current = payload.preferences ?? {};
     const merged: Partial<SearchPreferences> = { ...current };
 
@@ -339,7 +497,7 @@ export class ConversationService {
     if (university && !merged.city) merged.city = university.city;
 
     await this.repos.conversations.mergePayload(conversation.id, { preferences: merged });
-    await this.askNextPreference(user, conversation, language);
+    await this.askNextPreference(user, conversation, language, phrasedReply);
   }
 
   private async resolveUniversity(
@@ -411,6 +569,7 @@ export class ConversationService {
     user: UserRow,
     conversation: ConversationRow,
     language: Language,
+    phrasedReply?: string | null,
   ): Promise<void> {
     const fresh = await this.repos.conversations.findById(conversation.id);
     if (!fresh) return;
@@ -420,8 +579,13 @@ export class ConversationService {
     if (missing.length > 0) {
       const field = missing[0] as string;
       await this.moveTo(fresh, "COLLECTING_PREFERENCES");
-      const prompt = QUESTION_PROMPTS[field]?.[language];
-      if (prompt) await this.say(fresh, prompt, `ask-${field}`);
+      if (typeof phrasedReply === "string") {
+        // Already guarded upstream — never sent alongside the template.
+        await this.say(fresh, phrasedReply, `ask-${field}`);
+      } else {
+        const prompt = QUESTION_PROMPTS[field]?.[language];
+        if (prompt) await this.say(fresh, prompt, `ask-${field}`);
+      }
       return;
     }
 
@@ -824,11 +988,6 @@ export class ConversationService {
   ): Promise<void> {
     await this.repos.decisions.deleteForUser(user.id);
     await this.repos.viewEvents.deleteForUser(user.id);
-    await this.repos.conversations.patch(conversation.id, {
-      statePayload: "{}",
-      activeBatchId: null,
-      currentState: "OPTED_OUT",
-    });
     await this.repos.users.anonymise(user.id);
 
     await this.say(
@@ -838,6 +997,14 @@ export class ConversationService {
         : "Done. Your data has been deleted and I've stopped searching. Send HI if you ever want to start again.",
       "deleted",
     );
+
+    // Wiped last so the closing message above — which itself lands in
+    // recentTurns via say() — is cleared along with everything older.
+    await this.repos.conversations.patch(conversation.id, {
+      statePayload: "{}",
+      activeBatchId: null,
+      currentState: "OPTED_OUT",
+    });
     logger.info({ userId: user.id }, "user data deleted on request");
   }
 

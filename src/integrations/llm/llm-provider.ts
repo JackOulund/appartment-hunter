@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Language, SearchPreferences } from "../../domain/entities.js";
 import { furnishedPreferenceSchema } from "../../domain/entities.js";
+import type { TurnDecision } from "./turn-schema.js";
 
 /**
  * Everything the LLM returns is validated with these schemas before it reaches
@@ -30,6 +31,21 @@ export const universityGuessSchema = z.object({
 });
 export type UniversityGuess = z.infer<typeof universityGuessSchema>;
 
+export interface TurnContext {
+  /** The raw inbound message. */
+  text: string;
+  /** ConversationState name. */
+  state: string;
+  language: Language;
+  /** Preference fields still unset. */
+  missingFields: string[];
+  knownPreferences: Record<string, unknown>;
+  /** The apartments currently on screen; enough to resolve "the second one". */
+  roster: { position: number; title: string; monthlyRent: number; currency: string }[];
+  /** Rolling window, oldest first, max 6. */
+  recentTurns: { role: "user" | "agent"; text: string }[];
+}
+
 export interface LlmProvider {
   readonly name: string;
   detectLanguage(text: string): Promise<Language>;
@@ -51,6 +67,11 @@ export interface LlmProvider {
     email: string;
     language: Language;
   }): Promise<string>;
+  /**
+   * Reads one inbound message and returns a structured decision: a proposed
+   * command (if any), any preferences it stated, and a reply for chat/unknown.
+   */
+  decideTurn(context: TurnContext): Promise<TurnDecision>;
 }
 
 /**

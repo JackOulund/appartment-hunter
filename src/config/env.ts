@@ -43,6 +43,9 @@ const schema = z.object({
   ANTHROPIC_API_KEY: z.string().default(""),
   LLM_MODEL: z.string().default("claude-opus-5"),
 
+  // The switch restores pre-LLM routing without a deploy.
+  LLM_INTENT: booleanish.default(true),
+
   ACTION_TOKEN_SECRET: z.string().min(16).default("dev-only-action-token-secret-change-me"),
   INTERNAL_JOB_SECRET: z.string().min(8).default("dev-only-internal-job-secret"),
 
