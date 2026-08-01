@@ -2,11 +2,32 @@ import { Hono } from "hono";
 import { sql } from "drizzle-orm";
 import type { Container } from "../application/container.js";
 import { env } from "../config/env.js";
+import { logger } from "../utils/logger.js";
 
 export function healthRoutes(container: Container): Hono {
   const app = new Hono();
 
   app.get("/health", (c) => c.json({ status: "ok", service: "housing-agent" }));
+
+  /**
+   * Diagnostic page for the app card. It is plain HTML with no assets, so if a
+   * phone can render this, the host is reachable and embeddable — and the hit is
+   * logged, which distinguishes "the request never arrived" from "it arrived and
+   * the page failed".
+   */
+  app.get("/card-check", (c) => {
+    logger.info(
+      { userAgent: c.req.header("user-agent"), referer: c.req.header("referer") },
+      "card-check page opened",
+    );
+    return c.html(
+      `<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Card check</title>
+<body style="margin:0;display:grid;place-items:center;height:100vh;font:600 20px -apple-system,system-ui;background:#111;color:#eee">
+<div style="text-align:center"><div style="font-size:56px">✓</div>The card opened this page.</div>`,
+    );
+  });
 
   /** Readiness includes the database, so a broken migration surfaces here. */
   app.get("/ready", async (c) => {

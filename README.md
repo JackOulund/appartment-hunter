@@ -134,6 +134,7 @@ from the student's own phone number.
 | `npm run linq:webhook:register -- <url>` | create the webhook subscription |
 | `npm run linq:webhook:list` | list subscriptions, flagging broken ones |
 | `npm run linq:webhook:delete -- <id>` | remove a stale subscription |
+| `npm run linq:test-card -- <+E.164>` | send one real app card to check it renders |
 | `npm run job:renewal` | run the renewal check once |
 
 ## Routes
@@ -142,7 +143,8 @@ from the student's own phone number.
 | --- | --- |
 | `GET /health`, `GET /ready` | liveness; readiness includes the database |
 | `POST /webhooks/linq` | verified, deduplicated Linq events |
-| `GET /l/:token` | mobile apartment page (signed token) |
+| `GET /l/:token` | inspect view, opened by the app card (signed token) |
+| `POST /l/:token/event` | beacon target: what the user did in the inspect view |
 | `POST /l/:token/reject`, `POST /api/listings/:id/reject` | idempotent rejection |
 | `GET /l/:token/contact`, `POST /api/listings/:id/contact` | start an application draft |
 | `GET /applications/:id/review` | review, edit, confirm or cancel |
@@ -152,7 +154,7 @@ from the student's own phone number.
 ## Tests
 
 ```sh
-npm test     # 149 tests
+npm test     # 161 tests
 ```
 
 Covering: university extraction and campus ambiguity, preference parsing in

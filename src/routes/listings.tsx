@@ -32,6 +32,13 @@ export function listingRoutes(container: Container): Hono {
     try {
       const { payload, listing, user } = await resolve(c.req.param("token"));
 
+      // Logged so a tap is visible even when the page never renders on the
+      // device — it separates "never reached us" from "reached us and failed".
+      logger.info(
+        { listingId: listing.id, userAgent: c.req.header("user-agent") },
+        "listing page served",
+      );
+
       const profileRow = await container.repos.searchProfiles.findLatest(user.id);
       const university = user.acceptedUniversityId
         ? container.universities.getById(user.acceptedUniversityId)
@@ -136,6 +143,35 @@ export function listingRoutes(container: Container): Hono {
       if (isAppError(error)) return c.json({ error: error.code, message: error.message }, error.status as ContentfulStatusCode);
       return c.json({ error: "internal_error" }, 500);
     }
+  });
+
+  /**
+   * Beacon target for the inspect view. `navigator.sendBeacon` posts the body as
+   * text/plain, so the payload is read as text and parsed here rather than through
+   * a content-type-sensitive helper.
+   *
+   * Always answers 204 with an empty body — the page is closing and cannot act on
+   * a response, and a beacon must never be able to probe for valid tokens.
+   */
+  app.post("/l/:token/event", async (c) => {
+    let event = "";
+    try {
+      const raw = await c.req.text();
+      event = String((JSON.parse(raw) as { event?: unknown }).event ?? "");
+    } catch {
+      return c.body(null, 204);
+    }
+
+    try {
+      await container.experience.recordEvent({ token: c.req.param("token"), event });
+    } catch (error) {
+      if (isAppError(error)) {
+        logger.debug({ code: error.code, event }, "listing view event rejected");
+      } else {
+        logger.error({ error: String(error) }, "listing view event failed");
+      }
+    }
+    return c.body(null, 204);
   });
 
   app.get("/l/:token/contact", async (c) => {

@@ -30,6 +30,11 @@ const schema = z.object({
   LINQ_WEBHOOK_VERSION: z.string().default("2026-02-03"),
   LINQ_DRY_RUN: booleanish.default(true),
 
+  // "card" opens the apartment inside Linq's iMessage app; "link" sends a plain
+  // rich link, which opens in Safari instead. Switch to "link" if the in-app
+  // web view cannot load the page.
+  INSPECT_DELIVERY: z.enum(["card", "link"]).default("card"),
+
   HOUSING_PROVIDER: z.enum(["mock", "qasa"]).default("mock"),
   CONTACT_DRY_RUN: booleanish.default(true),
 

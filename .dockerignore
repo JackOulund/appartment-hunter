@@ -1,6 +1,19 @@
-node_modules/
-dist/
-data/
+# Secrets never enter the image — they are set with `fly secrets set`.
 .env
-.env.local
+.env.*
+!.env.example
+
 *.log
+
+node_modules
+dist
+data
+*.db
+*.db-journal
+
+.git
+.gitignore
+tests
+docs
+*.md
+.DS_Store

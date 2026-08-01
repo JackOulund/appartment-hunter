@@ -1,5 +1,6 @@
 export type AppErrorCode =
   | "validation_failed"
+  | "invalid_event"
   | "not_found"
   | "forbidden"
   | "conflict"
@@ -38,6 +39,7 @@ export class AppError extends Error {
 function defaultStatus(code: AppErrorCode): number {
   switch (code) {
     case "validation_failed":
+    case "invalid_event":
       return 400;
     case "token_invalid":
     case "token_expired":

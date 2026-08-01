@@ -180,6 +180,24 @@ export const listingDecisions = sqliteTable(
   (table) => [uniqueIndex("listing_decisions_user_listing_idx").on(table.userId, table.listingId)],
 );
 
+/**
+ * What the user did inside the inspect view. These are observations, never
+ * decisions — a decision only ever comes from an explicit tap or reply, and lives
+ * in `listing_decisions`.
+ */
+export const listingViewEvents = sqliteTable(
+  "listing_view_events",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => users.id),
+    listingId: text("listing_id").notNull().references(() => listings.id),
+    batchId: text("batch_id"),
+    event: text("event").notNull(),
+    createdAt: text("created_at").notNull().default(now),
+  },
+  (table) => [index("listing_view_events_user_listing_idx").on(table.userId, table.listingId)],
+);
+
 export const applications = sqliteTable(
   "applications",
   {

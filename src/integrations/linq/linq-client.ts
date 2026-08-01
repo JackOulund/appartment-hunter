@@ -37,11 +37,24 @@ export interface RichLinkMessage {
   conversationId?: string;
 }
 
+export interface ActionCardMessage {
+  /** Only for logging and persistence — the send itself is handle-targeted. */
+  chatId: string;
+  toHandle: string;
+  url: string;
+  title: string;
+  subtitle?: string;
+  button?: string;
+  idempotencyKey: string;
+  conversationId?: string;
+}
+
 export interface LinqAdapter {
   createConversation(input: { to: string[]; firstMessage: string }): Promise<{ chatId: string }>;
   sendText(message: TextMessage): Promise<SendResult>;
   sendMedia(message: MediaMessage): Promise<SendResult>;
   sendRichLink(message: RichLinkMessage): Promise<SendResult>;
+  sendActionCard(message: ActionCardMessage): Promise<SendResult>;
   startTyping(chatId: string): Promise<void>;
   stopTyping(chatId: string): Promise<void>;
   getChat(chatId: string): Promise<{ id: string; isGroup: boolean } | null>;
@@ -245,6 +258,49 @@ export class LinqClient implements LinqAdapter {
     );
   }
 
+  /**
+   * An app card — the "just-in-time UI" experience. Tapping it opens `url` inside
+   * Linq's iMessage app, which is what makes the inspect view feel like part of
+   * the conversation rather than a link out to Safari.
+   *
+   * Two rules come from the platform, not from us:
+   * 1. Actions are handle-targeted. They go to POST /v3/messages; the chat-scoped
+   *    send endpoint rejects them outright.
+   * 2. A brand-new chat cannot open with an action. Every card here is sent into
+   *    a conversation the user started, so a chat always exists by this point.
+   */
+  async sendActionCard(message: ActionCardMessage): Promise<SendResult> {
+    return this.dedupe(
+      message.idempotencyKey,
+      "action_card",
+      message.chatId,
+      `${message.title} → ${message.url}`,
+      message.conversationId,
+      async () => {
+        if (this.dryRun) return `dry-${message.idempotencyKey}`;
+        const content = buildLinkCardContent(message);
+        const response = await withRetry("messages.create", () =>
+          this.requireSdk().messages.create({
+            to: [message.toHandle],
+            message: content,
+            "Idempotency-Key": message.idempotencyKey,
+          }),
+        );
+
+        // A handle-targeted send resolves its own chat, and can fail over to a
+        // fresh line if the current one is flagged. That would put the card in a
+        // different thread from the rest of the batch, so it is worth seeing.
+        if (response.chat_id !== message.chatId) {
+          logger.warn(
+            { expected: message.chatId, resolved: response.chat_id, createdNewChat: response.created_new_chat },
+            "app card landed in a different chat than the conversation",
+          );
+        }
+        return extractMessageId(response, message.idempotencyKey);
+      },
+    );
+  }
+
   async startTyping(chatId: string): Promise<void> {
     if (this.dryRun) return;
     try {
@@ -284,6 +340,40 @@ export class LinqClient implements LinqAdapter {
       return { imessage: true };
     }
   }
+}
+
+/**
+ * `message.action` invokes an experience inside Linq's iMessage app.
+ *
+ * The field is real but untyped: the SDK's own `MessageContent` docstring says a
+ * message carries "EITHER `parts` … or a single `action`", and @linqapp/sdk 0.32.0
+ * shipped "add action field to message content for app experiences" — yet the
+ * generated interface never declares the property. The cast below is the whole
+ * extent of that gap, and it is kept in one place so it disappears the moment the
+ * SDK regenerates. Nothing here is guessed: the shape is the documented one.
+ */
+interface LinkCardContent {
+  action: {
+    experience: "link";
+    action: "open";
+    params: { url: string; title?: string; subtitle?: string; button?: string };
+  };
+}
+
+function buildLinkCardContent(message: ActionCardMessage): MessageContent {
+  const content: LinkCardContent = {
+    action: {
+      experience: "link",
+      action: "open",
+      params: {
+        url: message.url,
+        title: message.title,
+        ...(message.subtitle ? { subtitle: message.subtitle } : {}),
+        ...(message.button ? { button: message.button } : {}),
+      },
+    },
+  };
+  return content as unknown as MessageContent;
 }
 
 function extractMessageId(response: unknown, fallback: string): string {
