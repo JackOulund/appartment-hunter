@@ -57,12 +57,21 @@ interface StatePayload extends Record<string, unknown> {
   awaitingDeleteConfirmation?: boolean;
   awaitingContactField?: "fullName" | "email" | "phone";
   language?: Language;
+  /** True once shareContactCard has been attempted for this conversation — success or not. */
+  contactCardShared?: boolean;
   /** Rolling window, oldest first, max 6 — mirrors TurnContext.recentTurns. */
   recentTurns?: { role: "user" | "agent"; text: string }[];
 }
 
 /** Mirrors toCommand's default — a chat reply below this is a guess, not a decision. */
 const MIN_CHAT_CONFIDENCE = 0.6;
+
+/** True when a decideTurn extraction found nothing worth merging — every field is null or empty. */
+function isEmptyExtraction(preferences: ExtractedPreferences): boolean {
+  return Object.values(preferences).every(
+    (value) => value === null || (Array.isArray(value) && value.length === 0),
+  );
+}
 
 export interface ConversationDeps {
   repos: Repositories;
@@ -147,12 +156,14 @@ export class ConversationService {
     conversation: ConversationRow,
     text: string,
     tag: string,
+    opts?: { effect?: { name: string; type: "screen" | "bubble" } },
   ): Promise<void> {
     await this.linq.sendText({
       chatId: conversation.linqChatId,
       conversationId: conversation.id,
       text,
       idempotencyKey: idempotencyKeys.ad_hoc(conversation.id, `${tag}:${Date.now()}`),
+      ...(opts?.effect ? { effect: opts.effect } : {}),
     });
     await this.appendRecentTurn(conversation, "agent", text);
   }
@@ -190,6 +201,17 @@ export class ConversationService {
     if (user.deletedAt) {
       logger.info({ conversationId: conversation.id }, "ignoring message from deleted user");
       return;
+    }
+
+    if (!this.payload(conversation).contactCardShared) {
+      try {
+        await this.linq.shareContactCard(input.chatId);
+      } catch (error) {
+        logger.warn({ conversationId: conversation.id, error: String(error) }, "shareContactCard failed");
+      }
+      // One attempt per conversation, success or not — a misconfigured account
+      // (no contact card set up yet) must not retry on every inbound message.
+      await this.repos.conversations.mergePayload(conversation.id, { contactCardShared: true });
     }
 
     await this.repos.conversations.patch(conversation.id, { lastInboundMessageId: input.messageId });
@@ -360,6 +382,12 @@ export class ConversationService {
     const fresh = (await this.repos.conversations.findById(conversation.id)) ?? conversation;
     const payload = this.payload(fresh);
     const state = this.state(fresh);
+
+    // The LLM path is fully off for opted-out conversations — command proposals
+    // and chat both. Deterministic handling (the opted-out notice / an explicit
+    // restart) is the only thing allowed to speak here.
+    if (state === "OPTED_OUT") return false;
+
     const knownPreferences: Record<string, unknown> = payload.preferences ?? {};
     const roster = await this.buildRoster(fresh);
 
@@ -395,6 +423,12 @@ export class ConversationService {
     // deterministic onboarding takes the message instead.
     if (decision.command.kind !== "chat" || decision.confidence < MIN_CHAT_CONFIDENCE) return false;
 
+    // Only the deterministic university flow may acknowledge a university. A
+    // confident chat reply here (e.g. "Congratulations on Lund!") would let the
+    // model swallow the message before resolveUniversity ever runs, so
+    // acceptedUniversityId never gets persisted and the same question repeats.
+    if (!user.acceptedUniversityId || state === "NEW" || state === "COLLECTING_UNIVERSITY") return false;
+
     const reply = replyFor(decision, null);
     if (reply === null) return false;
 
@@ -414,7 +448,12 @@ export class ConversationService {
     // In onboarding states the guarded reply rides along with continueOnboarding
     // instead of being sent on its own, so the user is never double-messaged.
     if (state === "COLLECTING_PREFERENCES" || state === "CONFIRMING_PREFERENCES") {
-      await this.continueOnboarding(user, conversation, text, language, decision.preferences, guard.text);
+      // A combined decideTurn call that extracted nothing must not be trusted as
+      // "no preferences in this message" — let continueOnboarding run its own
+      // dedicated extraction instead of silently storing an empty merge, which
+      // is what produces the "same question re-asked" loop.
+      const preextracted = isEmptyExtraction(decision.preferences) ? undefined : decision.preferences;
+      await this.continueOnboarding(user, conversation, text, language, preextracted, guard.text);
       return true;
     }
 
@@ -551,7 +590,9 @@ export class ConversationService {
     });
     await this.moveTo(conversation, "COLLECTING_PREFERENCES");
 
-    await this.say(conversation, buildCongratulations(best.university.officialName, language), "congrats");
+    await this.say(conversation, buildCongratulations(best.university.officialName, language), "congrats", {
+      effect: { name: "confetti", type: "screen" },
+    });
 
     // Multi-campus universities materially change the search — ask up front.
     if (best.university.campuses.length > 1) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MockLlmProvider } from "../../src/integrations/llm/mock-llm-provider.js";
-import { AnthropicLlmProvider } from "../../src/integrations/llm/anthropic-llm-provider.js";
+import { AnthropicLlmProvider, buildTurnSystemPrompt } from "../../src/integrations/llm/anthropic-llm-provider.js";
 import { turnDecisionSchema } from "../../src/integrations/llm/turn-schema.js";
 import type { TurnContext } from "../../src/integrations/llm/llm-provider.js";
 
@@ -171,5 +171,21 @@ describe("AnthropicLlmProvider.decideTurn", () => {
   it("is implemented on the interface (no network call made)", () => {
     const provider = new AnthropicLlmProvider({ apiKey: "test-key" });
     expect(typeof provider.decideTurn).toBe("function");
+  });
+});
+
+describe("buildTurnSystemPrompt", () => {
+  it("anchors the prompt to today's date so relative dates can be resolved", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const prompt = buildTurnSystemPrompt(context({ text: "1 September" }));
+    expect(prompt).toContain(`Today is ${today}.`);
+  });
+
+  it("states the same preference-extraction rules as extractPreferences", () => {
+    const prompt = buildTurnSystemPrompt(context({ text: "1 September" }));
+    expect(prompt).toContain("ISO (YYYY-MM-DD)");
+    expect(prompt).toContain("whole number");
+    expect(prompt).toContain("whole months");
+    expect(prompt).toContain("whole minutes");
   });
 });

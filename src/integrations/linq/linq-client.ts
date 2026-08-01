@@ -20,6 +20,8 @@ export interface TextMessage {
   text: string;
   idempotencyKey: string;
   conversationId?: string;
+  /** iMessage screen/bubble effect. See MessageEffect in messages.d.ts. */
+  effect?: { name: string; type: "screen" | "bubble" };
 }
 
 export interface MediaMessage {
@@ -49,12 +51,26 @@ export interface ActionCardMessage {
   conversationId?: string;
 }
 
+export interface ContactCardInput {
+  firstName: string;
+  phoneNumber: string;
+  imageUrl?: string;
+  lastName?: string;
+}
+
+export interface ContactCardResult {
+  dryRun: boolean;
+  isActive: boolean;
+}
+
 export interface LinqAdapter {
   createConversation(input: { to: string[]; firstMessage: string }): Promise<{ chatId: string }>;
   sendText(message: TextMessage): Promise<SendResult>;
   sendMedia(message: MediaMessage): Promise<SendResult>;
   sendRichLink(message: RichLinkMessage): Promise<SendResult>;
   sendActionCard(message: ActionCardMessage): Promise<SendResult>;
+  setContactCard(input: ContactCardInput): Promise<ContactCardResult>;
+  shareContactCard(chatId: string): Promise<void>;
   startTyping(chatId: string): Promise<void>;
   stopTyping(chatId: string): Promise<void>;
   getChat(chatId: string): Promise<{ id: string; isGroup: boolean } | null>;
@@ -137,6 +153,7 @@ export class LinqClient implements LinqAdapter {
     preview: string,
     conversationId: string | undefined,
     send: () => Promise<string>,
+    extra?: Record<string, unknown>,
   ): Promise<SendResult> {
     const existing = await this.outbound.findByKey(idempotencyKey);
     if (existing?.linqMessageId) {
@@ -156,7 +173,7 @@ export class LinqClient implements LinqAdapter {
     });
 
     logger.info(
-      { kind, chatId, dryRun: this.dryRun, preview },
+      { kind, chatId, dryRun: this.dryRun, preview, ...extra },
       this.dryRun ? "dry-run: message not sent" : "message sent",
     );
     return { messageId, dryRun: this.dryRun, deduplicated: false };
@@ -201,11 +218,13 @@ export class LinqClient implements LinqAdapter {
             message: {
               idempotency_key: message.idempotencyKey,
               parts: [{ type: "text", value: message.text }],
+              ...(message.effect ? { effect: message.effect } : {}),
             },
           }),
         );
         return extractMessageId(response, message.idempotencyKey);
       },
+      message.effect ? { effect: message.effect } : undefined,
     );
   }
 
@@ -339,6 +358,52 @@ export class LinqClient implements LinqAdapter {
       logger.debug({ error: String(error) }, "capability check failed, assuming iMessage");
       return { imessage: true };
     }
+  }
+
+  /**
+   * Sets (creates or replaces) the contact card shown for our line in iMessage
+   * Name and Photo Sharing. This is one-time setup, not a per-message send, so it
+   * intentionally bypasses the outbound-dedupe machinery used by the sends above.
+   */
+  async setContactCard(input: ContactCardInput): Promise<ContactCardResult> {
+    if (this.dryRun) {
+      logger.info(
+        {
+          firstName: input.firstName,
+          lastName: input.lastName,
+          phoneNumber: redactHandle(input.phoneNumber),
+          hasImage: Boolean(input.imageUrl),
+        },
+        "dry-run: contact card not set",
+      );
+      return { dryRun: true, isActive: false };
+    }
+
+    const response = await withRetry("contactCard.create", () =>
+      this.requireSdk().contactCard.create({
+        first_name: input.firstName,
+        phone_number: input.phoneNumber,
+        ...(input.imageUrl ? { image_url: input.imageUrl } : {}),
+        ...(input.lastName ? { last_name: input.lastName } : {}),
+      }),
+    );
+    return { dryRun: false, isActive: response.is_active };
+  }
+
+  /**
+   * Shares our contact card (Name and Photo Sharing) into a chat, so the
+   * recipient sees the "shared their name and photo" banner. Unlike
+   * startTyping/stopTyping this does not swallow its own errors — a failure
+   * here (most often: no contact card configured yet) is one-time-per-
+   * conversation and worth a real log line, so it is normalised and thrown
+   * for the caller (ConversationService) to catch and decide on.
+   */
+  async shareContactCard(chatId: string): Promise<void> {
+    if (this.dryRun) {
+      logger.info({ chatId }, "dry-run: contact card not shared");
+      return;
+    }
+    await withRetry("chats.shareContactCard", () => this.requireSdk().chats.shareContactCard(chatId));
   }
 }
 

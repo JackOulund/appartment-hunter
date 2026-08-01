@@ -1,6 +1,131 @@
 import { describe, expect, it } from "vitest";
 import { completeOnboarding, createHarness, TEST_CHAT_ID, TEST_HANDLE } from "../helpers/harness.js";
 import { ConversationService } from "../../src/application/conversation-service.js";
+import { MockLlmProvider } from "../../src/integrations/llm/mock-llm-provider.js";
+import { turnDecisionSchema, type TurnDecision } from "../../src/integrations/llm/turn-schema.js";
+import type { LlmProvider, TurnContext } from "../../src/integrations/llm/llm-provider.js";
+import type { Language } from "../../src/domain/entities.js";
+
+/**
+ * Delegates everything to MockLlmProvider except decideTurn, which always
+ * returns a confident "chat" decision with no extracted preferences — the
+ * exact shape a real model returned in the Fly logs that caused acceptedUniversityId
+ * to never persist. Counts invocations so tests can assert the LLM path was
+ * (or was not) actually reached.
+ */
+class ForcedChatLlmProvider implements LlmProvider {
+  readonly name = "forced-chat-stub";
+  decideTurnCalls = 0;
+  extractPreferencesCalls = 0;
+  private readonly mock = new MockLlmProvider();
+
+  constructor(private readonly reply: string = "Congrats on Lund!") {}
+
+  detectLanguage(text: string) {
+    return this.mock.detectLanguage(text);
+  }
+  extractPreferences(text: string, context: { language: Language }) {
+    this.extractPreferencesCalls += 1;
+    return this.mock.extractPreferences(text, context);
+  }
+  guessUniversity(text: string) {
+    return this.mock.guessUniversity(text);
+  }
+  writeReply(input: { intent: string; facts: string[]; language: Language }) {
+    return this.mock.writeReply(input);
+  }
+  draftLandlordMessage(input: Parameters<LlmProvider["draftLandlordMessage"]>[0]) {
+    return this.mock.draftLandlordMessage(input);
+  }
+  async decideTurn(_context: TurnContext): Promise<TurnDecision> {
+    this.decideTurnCalls += 1;
+    return turnDecisionSchema.parse({
+      command: { kind: "chat" },
+      preferences: {},
+      reply: this.reply,
+      confidence: 0.9,
+    });
+  }
+}
+
+describe("LLM chat leak does not swallow the university flow", () => {
+  it("state NEW: runs resolveUniversity despite a confident forced-chat decision", async () => {
+    const stub = new ForcedChatLlmProvider();
+    const h = await createHarness({ llm: stub });
+
+    await h.say("Hi I got accepted to Lund university");
+
+    const user = await h.container.repos.users.findByHandle(TEST_HANDLE);
+    expect(user?.acceptedUniversityId).toBeTruthy();
+    // The deterministic university flow ran instead of the model's chat reply.
+    expect(await h.state()).not.toBe("NEW");
+    expect(h.linq.texts().join(" ")).not.toContain("Congrats on Lund!");
+  });
+
+  it("state COLLECTING_UNIVERSITY: persists the university despite a confident forced-chat decision", async () => {
+    const stub = new ForcedChatLlmProvider();
+    const h = await createHarness({ llm: stub });
+
+    // First message doesn't name a university, so onboarding parks in
+    // COLLECTING_UNIVERSITY without setting acceptedUniversityId.
+    await h.say("hello there");
+    expect(await h.state()).toBe("COLLECTING_UNIVERSITY");
+    let user = await h.container.repos.users.findByHandle(TEST_HANDLE);
+    expect(user?.acceptedUniversityId).toBeNull();
+
+    await h.say("Lund university");
+
+    user = await h.container.repos.users.findByHandle(TEST_HANDLE);
+    expect(user?.acceptedUniversityId).toBeTruthy();
+    expect(h.linq.texts().join(" ")).not.toContain("Congrats on Lund!");
+  });
+});
+
+describe("LLM path is fully off once a conversation has opted out", () => {
+  it("never calls decideTurn and never sends a chat reply in OPTED_OUT", async () => {
+    const stub = new ForcedChatLlmProvider();
+    const h = await createHarness({ llm: stub });
+
+    await completeOnboarding(h);
+    await h.say("SEARCH");
+    await h.say("delete my data");
+    await h.say("yes");
+    expect(await h.state()).toBe("OPTED_OUT");
+
+    const callsBeforeFinalMessage = stub.decideTurnCalls;
+    h.linq.reset();
+
+    await h.say("hello again, are you there?");
+
+    expect(stub.decideTurnCalls).toBe(callsBeforeFinalMessage);
+    expect(h.linq.texts().join(" ")).not.toContain("Congrats on Lund!");
+  });
+});
+
+describe("empty combined extraction falls back to a dedicated extractPreferences call", () => {
+  it("calls extractPreferences directly when decideTurn's own extraction is empty", async () => {
+    const stub = new ForcedChatLlmProvider("Sounds good, let's keep going.");
+    const h = await createHarness({ llm: stub });
+
+    await h.say("I got accepted to Lund university");
+    await h.say("1"); // campus choice; must not itself trigger extraction
+    expect(await h.state()).toBe("COLLECTING_PREFERENCES");
+
+    const callsBeforeBudget = stub.extractPreferencesCalls;
+    // Deliberately outside parseCommand's deterministic budget pattern (no
+    // "budget"/"rent"/"hyra" keyword), so this only succeeds through the
+    // fallback dedicated extractPreferences call.
+    await h.say("8000");
+
+    expect(stub.extractPreferencesCalls).toBeGreaterThan(callsBeforeBudget);
+
+    const conversation = await h.container.repos.conversations.findByChatId(TEST_CHAT_ID);
+    const payload = h.container.repos.conversations.getPayload<{
+      preferences?: { maximumMonthlyRent?: number };
+    }>(conversation!);
+    expect(payload.preferences?.maximumMonthlyRent).toBe(8000);
+  });
+});
 
 describe("natural language turns", () => {
   it("presents a new batch when the user asks for more in their own words", async () => {

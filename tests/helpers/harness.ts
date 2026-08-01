@@ -6,8 +6,11 @@ import { dirname, join } from "node:path";
 import * as schema from "../../src/database/schema.js";
 import { createContainer, type Container } from "../../src/application/container.js";
 import { MockHousingProvider } from "../../src/integrations/housing/mock-housing-provider.js";
+import type { LlmProvider } from "../../src/integrations/llm/llm-provider.js";
 import type {
   ActionCardMessage,
+  ContactCardInput,
+  ContactCardResult,
   LinqAdapter,
   MediaMessage,
   RichLinkMessage,
@@ -29,12 +32,17 @@ export interface SentMessage {
   /** Handle-targeted sends only — app cards go to a handle, not a chat. */
   toHandle?: string;
   card?: { title: string; subtitle: string | undefined; button: string | undefined; url: string };
+  effect?: { name: string; type: "screen" | "bubble" };
 }
 
 /** Records what would have been sent, and enforces idempotency like the real client. */
 export class FakeLinq implements LinqAdapter {
   readonly sent: SentMessage[] = [];
   readonly typing: string[] = [];
+  readonly contactCards: ContactCardInput[] = [];
+  readonly sharedContactCardChats: string[] = [];
+  /** Set to make the next shareContactCard call(s) reject, e.g. to simulate no card configured. */
+  shareContactCardError: Error | null = null;
   private readonly byKey = new Map<string, string>();
   private counter = 0;
 
@@ -53,7 +61,12 @@ export class FakeLinq implements LinqAdapter {
     return { chatId: `chat-${input.to.join("-")}` };
   }
   async sendText(m: TextMessage): Promise<SendResult> {
-    return this.record("text", m.chatId, m.text, m.idempotencyKey);
+    const result = this.record("text", m.chatId, m.text, m.idempotencyKey);
+    if (!result.deduplicated && m.effect) {
+      const sent = this.sent.at(-1);
+      if (sent) sent.effect = m.effect;
+    }
+    return result;
   }
   async sendMedia(m: MediaMessage): Promise<SendResult> {
     return this.record("media", m.chatId, m.imageUrl, m.idempotencyKey);
@@ -71,6 +84,14 @@ export class FakeLinq implements LinqAdapter {
       }
     }
     return result;
+  }
+  async setContactCard(input: ContactCardInput): Promise<ContactCardResult> {
+    this.contactCards.push(input);
+    return { dryRun: true, isActive: true };
+  }
+  async shareContactCard(chatId: string): Promise<void> {
+    if (this.shareContactCardError) throw this.shareContactCardError;
+    this.sharedContactCardChats.push(chatId);
   }
   async startTyping(chatId: string): Promise<void> {
     this.typing.push(chatId);
@@ -121,7 +142,7 @@ export const TEST_CHAT_ID = "test-chat";
 export const TEST_HANDLE = "+46700000001";
 
 export async function createHarness(
-  options: { housing?: MockHousingProvider } = {},
+  options: { housing?: MockHousingProvider; llm?: LlmProvider } = {},
 ): Promise<Harness> {
   const client = createClient({ url: ":memory:" });
   const db = drizzle(client, { schema });
@@ -129,7 +150,7 @@ export async function createHarness(
 
   const linq = new FakeLinq();
   const housing = options.housing ?? new MockHousingProvider();
-  const container = createContainer({ db, linq, housing });
+  const container = createContainer({ db, linq, housing, ...(options.llm ? { llm: options.llm } : {}) });
 
   let inbound = 0;
 
