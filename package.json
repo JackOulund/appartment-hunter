@@ -1,15 +1,21 @@
 {
   "name": "appartment-hunter",
   "version": "1.0.0",
-  "description": "",
+  "description": "iMessage AI housing agent for students, built on Hono and the Linq Partner API V3",
   "scripts": {
-    "dev": "tsx watch --env-file=.env src/index.ts",
-    "start": "node --env-file=.env dist/src/index.js",
-    "build": "tsc",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "build": "tsc && tsx scripts/copy-migrations.ts",
+    "start": "node --env-file-if-exists=.env dist/src/index.js",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "subscribe": "tsx --env-file=.env scripts/subscribe.ts"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
+    "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts",
+    "linq:webhook:register": "tsx --env-file-if-exists=.env scripts/register-linq-webhook.ts",
+    "job:renewal": "tsx --env-file-if-exists=.env scripts/run-renewal-check.ts",
+    "linq:webhook:list": "tsx --env-file-if-exists=.env scripts/manage-linq-webhooks.ts list",
+    "linq:webhook:delete": "tsx --env-file-if-exists=.env scripts/manage-linq-webhooks.ts delete"
   },
   "keywords": [],
   "author": "",
@@ -18,14 +24,23 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@hono/node-server": "^2.0.12",
+    "@libsql/client": "^0.17.4",
     "@linqapp/sdk": "^0.32.1",
-    "hono": "^4.12.33"
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.33",
+    "pino": "^10.3.1",
+    "pino-pretty": "^13.1.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.23.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
-  "private": true
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  }
 }
