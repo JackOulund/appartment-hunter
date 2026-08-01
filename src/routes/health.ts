@@ -3,11 +3,25 @@ import { sql } from "drizzle-orm";
 import type { Container } from "../application/container.js";
 import { env } from "../config/env.js";
 import { logger } from "../utils/logger.js";
+import { AVATAR_PNG_BASE64 } from "../ui/avatar.js";
+
+const AVATAR_PNG = Buffer.from(AVATAR_PNG_BASE64, "base64");
 
 export function healthRoutes(container: Container): Hono {
   const app = new Hono();
 
   app.get("/health", (c) => c.json({ status: "ok", service: "housing-agent" }));
+
+  /**
+   * Serves the contact-card avatar. Linq's servers fetch this cross-origin when
+   * applying the contact card (POST /v3/contact_card `image_url`), so it must be
+   * reachable without cookies or referrer checks — a long, public cache is safe
+   * because the image is baked into source and only changes on a redeploy.
+   */
+  app.get("/avatar.png", (c) => {
+    c.header("Cache-Control", "public, max-age=86400");
+    return c.body(new Uint8Array(AVATAR_PNG), 200, { "Content-Type": "image/png" });
+  });
 
   /**
    * Diagnostic page for the app card. It is plain HTML with no assets, so if a

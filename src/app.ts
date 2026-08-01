@@ -53,7 +53,8 @@ export function createApp(overrides: ContainerOverrides = {}): { app: Hono; cont
     crossOriginResourcePolicy: "cross-origin",
     crossOriginOpenerPolicy: false,
   });
-  const isEmbeddable = (path: string) => path.startsWith("/l/") || path === "/card-check";
+  const isEmbeddable = (path: string) =>
+    path.startsWith("/l/") || path === "/card-check" || path === "/avatar.png";
   app.use("*", (c, next) => (isEmbeddable(c.req.path) ? embeddable(c, next) : strict(c, next)));
   app.use(
     "*",
